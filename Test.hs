@@ -2,9 +2,9 @@
 {-# LANGUAGE DeriveDataTypeable  #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE TemplateHaskell     #-}
-{-# LANGUAGE GADTs     #-}
-{-# LANGUAGE KindSignatures     #-}
-{-# LANGUAGE Rank2Types     #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE Rank2Types          #-}
 
 import System.Environment (getArgs)
 import Control.Distributed.Process
