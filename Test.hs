@@ -5,6 +5,8 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE Rank2Types          #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 import System.Environment (getArgs)
 import Control.Distributed.Process
@@ -20,6 +22,10 @@ import Data.IORef
 import System.IO.Unsafe
 import Data.Array.IO
 import System.Random
+
+import GHC.Generics (Generic)
+
+import GHC.Packing
 
 import Control.Monad
 import Control.Monad.Fix
@@ -75,25 +81,50 @@ initialConf localNode = do
     localNode = localNode
   }
 
+type Thunk a = Serialized a
+
 class (Binary a, Typeable a, NFData a) => Evaluatable a where
-  evalTask :: (SendPort (SendPort a), SendPort a) -> Closure (Process ())
+  evalTask :: (SendPort (SendPort (Thunk a)), SendPort a) -> Closure (Process ())
 
 evalTaskBase :: (Binary a, Typeable a, NFData a) => 
-  (SendPort (SendPort a), SendPort a) -> Process ()
+  (SendPort (SendPort (Thunk a)), SendPort a) -> Process ()
 evalTaskBase (inputPipe, output) = do
   (sendMaster, rec) <- newChan
+
+  -- say $ show $ typeOf $ sendMaster
+
   -- send the master the SendPort, that we
   -- want to listen the other end on for the input
   sendChan inputPipe sendMaster
-  a <- receiveChan rec
+
+  -- receive the actual input
+  thunkA <- receiveChan rec
+
+  -- and deserialize
+  a <- liftIO $ deserialize thunkA
+
+  -- force the input and send it back to master
   sendChan output (rnf a `seq` a)
 
-evalTaskInt :: (SendPort (SendPort Int), SendPort Int) -> Process ()
+evalTaskInt :: (SendPort (SendPort (Thunk Int)), SendPort Int) -> Process ()
 evalTaskInt = evalTaskBase
 
-$(remotable ['evalTaskInt])
+data MyInt = I Int deriving (Show, Generic, Typeable)
+
+instance Binary MyInt
+
+instance NFData MyInt where
+  rnf (I x) = rnf $ x
+
+evalTaskMyInt :: (SendPort (SendPort (Thunk MyInt)), SendPort MyInt) -> Process ()
+evalTaskMyInt = evalTaskBase
+
+$(remotable ['evalTaskInt, 'evalTaskMyInt])
 
 instance Evaluatable Int where
+  evalTask = $(mkClosure 'evalTaskInt)
+
+instance Evaluatable MyInt where
   evalTask = $(mkClosure 'evalTaskInt)
 
 myRemoteTable :: RemoteTable
@@ -101,17 +132,30 @@ myRemoteTable = Main.__remoteTable initRemoteTable
 
 forceSingle :: (Evaluatable a) => NodeId -> MVar a -> a -> Process ()
 forceSingle node out a = do
+  -- create the Channel that we use to send the 
+  -- Sender of the input from the slave node from
   (inputSenderSender, inputSenderReceiver) <- newChan
+
+  -- create the channel to receive the output from
   (outputSender, outputReceiver) <- newChan
 
+  -- spawn the actual evaluation task on the given node
+  -- and pass the two sender objects we created above
   spawn node (evalTask (inputSenderSender, outputSender))
 
+  -- wait for the slave to send the input sender
   inputSender <- receiveChan inputSenderReceiver
-  sendChan inputSender a
 
+  thunkA <- liftIO $ trySerialize a
+
+  -- send the input to the slave
+  sendChan inputSender thunkA
+
+  -- wait for the result from the slave
   forcedA <- receiveChan outputReceiver
 
-  liftIO $ putMVar out a
+  -- put the output back into the passed MVar
+  liftIO $ putMVar out forcedA
 
 evalSingle :: Evaluatable a => Conf -> NodeId -> a -> Par a
 evalSingle conf node a = do
@@ -146,7 +190,7 @@ master conf backend slaves = do
           slaveProcesses <- findSlaves backend
           let slaveNodes = map processNodeId slaveProcesses
           liftIO $ do
-              modifyMVar_ (workers conf) (\old -> return slaveNodes)
+              modifyMVar_ (workers conf) (\_ -> return slaveNodes)
               if (length slaveNodes) > 0 then
                 modifyMVar_ (started conf) (\_ -> return True)
               else
@@ -160,6 +204,14 @@ waitUntil condition = fix $ \loop -> do
 
 hasSlaveNode :: Conf -> IO Bool
 hasSlaveNode conf = readMVar (started conf)
+
+fib n = go n (0,1)
+  where
+    go !n (!a, !b) | n==0      = a
+                   | otherwise = traceShowId $ go (n-1) (b, a+b)
+
+parFib :: Conf -> [Int] -> [Int]
+parFib conf xs = runPar $ evalParallel conf $ map fib xs
 
 main :: IO ()
 main = do
@@ -180,8 +232,10 @@ main = do
       waitUntil (hasSlaveNode conf)
 
       -- wait a bit
-      threadDelay 1000000
+      --threadDelay 1000000
       readMVar (workers conf) >>= print
+
+      print $ parFib conf $ [100000..100010]
 
       -- TODO: actual computation here!
     ["slave", host, port] -> do
