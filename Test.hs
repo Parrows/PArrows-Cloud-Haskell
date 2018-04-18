@@ -100,8 +100,6 @@ evalTaskBase :: (Binary a, Typeable a, NFData a) =>
 evalTaskBase (inputPipe, output) = do
   (sendMaster, rec) <- newChan
 
-  -- say $ show $ typeOf $ sendMaster
-
   -- send the master the SendPort, that we
   -- want to listen the other end on for the input
   sendChan inputPipe sendMaster
@@ -118,7 +116,7 @@ evalTaskBase (inputPipe, output) = do
 evalTaskInt :: (SendPort (SendPort (Thunk Int)), SendPort Int) -> Process ()
 evalTaskInt = evalTaskBase
 
-data MyInt = I Int deriving (Show, Generic, Typeable)
+data MyInt = I {-# NOUNPACK #-} Int deriving (Show, Generic, Typeable)
 
 instance Binary MyInt
 
@@ -134,7 +132,7 @@ instance Evaluatable Int where
   evalTask = $(mkClosure 'evalTaskInt)
 
 instance Evaluatable MyInt where
-  evalTask = $(mkClosure 'evalTaskInt)
+  evalTask = $(mkClosure 'evalTaskMyInt)
 
 myRemoteTable :: RemoteTable
 myRemoteTable = Main.__remoteTable initRemoteTable
@@ -214,12 +212,12 @@ waitUntil condition = fix $ \loop -> do
 hasSlaveNode :: Conf -> IO Bool
 hasSlaveNode conf = readMVar (started conf)
 
-fib n = go n (0,1)
+fib (I n) = I $ go n (0,1)
   where
     go !n (!a, !b) | n==0      = a
                    | otherwise = go (n-1) (b, a+b)
 
-parFib :: Conf -> [Int] -> [Int]
+parFib :: Conf -> [MyInt] -> [MyInt]
 parFib conf xs = runPar $ evalParallel conf $ map fib xs
 
 main :: IO ()
@@ -244,7 +242,7 @@ main = do
       --threadDelay 1000000
       readMVar (workers conf) >>= print
 
-      print $ parFib conf $ [100000..100010]
+      print $ parFib conf $ map I [100000..100010]
 
       -- TODO: actual computation here!
     ["slave", host, port] -> do
