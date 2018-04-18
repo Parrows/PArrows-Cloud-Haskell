@@ -158,6 +158,10 @@ forceSingle node out a = do
   -- send the input to the slave
   sendChan inputSender thunkA
 
+  -- TODO: do optional timeout variant so that the computation
+  -- runs on the master machine instead
+  -- so that we can guarantee results
+
   -- wait for the result from the slave
   forcedA <- receiveChan outputReceiver
 
