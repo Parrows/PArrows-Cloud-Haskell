@@ -66,11 +66,19 @@ data State = State {
   workers :: MVar [NodeId],
   shutdown :: MVar Bool,
   started :: MVar Bool,
-  localNode :: LocalNode
+  localNode :: LocalNode,
+  serializeBufferSize :: Int
 }
 
-initialConf :: LocalNode -> IO Conf
-initialConf localNode = do
+-- | default buffer size used by trySerialize
+defaultBufSize :: Int
+defaultBufSize = 10 * 2^20 -- 10 MB
+
+defaultInitConf :: LocalNode -> IO Conf
+defaultInitConf = initialConf defaultBufSize
+
+initialConf :: Int -> LocalNode -> IO Conf
+initialConf serializeBufferSize localNode = do
   workersMVar <- newMVar []
   shutdownMVar <- newMVar False
   startedMVar <- newMVar False
@@ -78,7 +86,8 @@ initialConf localNode = do
     workers = workersMVar,
     shutdown = shutdownMVar,
     started = startedMVar,
-    localNode = localNode
+    localNode = localNode,
+    serializeBufferSize = serializeBufferSize
   }
 
 type Thunk a = Serialized a
@@ -208,7 +217,7 @@ hasSlaveNode conf = readMVar (started conf)
 fib n = go n (0,1)
   where
     go !n (!a, !b) | n==0      = a
-                   | otherwise = traceShowId $ go (n-1) (b, a+b)
+                   | otherwise = go (n-1) (b, a+b)
 
 parFib :: Conf -> [Int] -> [Int]
 parFib conf xs = runPar $ evalParallel conf $ map fib xs
@@ -223,7 +232,7 @@ main = do
 
       localNode <- newLocalNode backend
 
-      conf <- initialConf localNode
+      conf <- defaultInitConf localNode
 
       -- fork away the master node
       forkIO $ startMaster backend (master conf backend)
