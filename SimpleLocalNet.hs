@@ -53,11 +53,24 @@ import Control.Concurrent.MVar
 
 import Debug.Trace
 
+data Computation a = Comp {
+  computation :: IO (),
+  result :: IO a
+}
+
+sequenceComp :: [Computation a] -> Computation [a]
+sequenceComp comps = Comp { computation = newComp, result = newRes } 
+  where newComp = sequence_ $ map computation comps
+        newRes = sequence $ map result comps
+
 -- our internal Par Monad, we just use IO for now
-type Par a = IO a
+type Par a = IO (Computation a)
 
 runPar :: Par a -> a
-runPar = unsafePerformIO
+runPar x = unsafePerformIO $ do
+  comp <- x
+  computation comp
+  result comp
 
 -- our config type. for now, this only hosts the current state
 -- of the backend
@@ -152,8 +165,8 @@ forceSingle node out a = do
 evalSingle :: Evaluatable a => Conf -> NodeId -> a -> Par a
 evalSingle conf node a = do
   mvar <- newEmptyMVar
-  forkProcess (localNode conf) $ forceSingle node mvar a
-  takeMVar mvar
+  let computation = forkProcess (localNode conf) $ forceSingle node mvar a
+  return $ Comp { computation = computation >> return (), result = takeMVar mvar }
 
 -- | evaluates multiple values inside the Par monad
 evalParallel :: Evaluatable a => Conf -> [a] -> Par [a]
@@ -168,7 +181,9 @@ evalParallel conf as = do
   let workAssignment = zipWith (,) (cycle shuffledWorkers) as
 
   -- build the parallel computation with sequence
-  sequence $ map (uncurry $ evalSingle conf) workAssignment
+  comps <-  sequence $ map (uncurry $ evalSingle conf) workAssignment
+
+  return $ sequenceComp comps
 
 -- | the code for the master node. automatically discovers all slaves and 
 -- adds/removes them from the Conf object
