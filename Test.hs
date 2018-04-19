@@ -1,6 +1,9 @@
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Main where
 
 import GHC.Generics (Generic)
@@ -12,19 +15,25 @@ import System.Environment (getArgs)
 
 import SimpleLocalNet
 
+import Parrows.Definition
+import Parrows.Future
+import Parrows.Util
+
+import Control.Arrow
+
 evalTaskInt :: (SendPort (SendPort (Thunk Int)), SendPort Int) -> Process ()
 evalTaskInt = evalTaskBase
 
 data MyInt = I {-# NOUNPACK #-} Int deriving (Show, Generic, Typeable)
 
 instance Binary MyInt
-
 instance NFData MyInt where
   rnf (I x) = rnf $ x
 
 evalTaskMyInt :: (SendPort (SendPort (Thunk MyInt)), SendPort MyInt) -> Process ()
 evalTaskMyInt = evalTaskBase
 
+-- remotable declaration for all eval tasks
 $(remotable ['evalTaskInt, 'evalTaskMyInt])
 
 instance Evaluatable Int where
@@ -42,7 +51,10 @@ fib (I n) = I $ go n (0,1)
                    | otherwise = go (n-1) (b, a+b)
 
 parFib :: Conf -> [MyInt] -> [MyInt]
-parFib conf xs = runPar $ evalParallel conf $ map fib xs
+parFib conf xs = parEvalN conf (repeat fib) $ xs
+
+instance (Evaluatable b, ArrowChoice arr) => ArrowParallel arr a b Conf where
+    parEvalN conf fs = evalN fs >>> arr (evalParallel conf) >>> arr runPar
 
 main :: IO ()
 main = do
