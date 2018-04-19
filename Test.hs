@@ -16,10 +16,19 @@ import System.Environment (getArgs)
 import SimpleLocalNet
 
 import Parrows.Definition
+import Parrows.Skeletons.Map
+
 import Parrows.Future
 import Parrows.Util
 
 import Control.Arrow
+
+import Control.DeepSeq
+
+-- for Sudoku
+
+import Sudoku
+import Data.Maybe
 
 evalTaskInt :: (SendPort (SendPort (Thunk Int)), SendPort Int) -> Process ()
 evalTaskInt = evalTaskBase
@@ -33,14 +42,26 @@ instance NFData MyInt where
 evalTaskMyInt :: (SendPort (SendPort (Thunk MyInt)), SendPort MyInt) -> Process ()
 evalTaskMyInt = evalTaskBase
 
+evalTaskGrid :: (SendPort (SendPort (Thunk (Maybe Grid))), SendPort (Maybe Grid)) -> Process ()
+evalTaskGrid = evalTaskBase
+
+evalTaskGridList :: (SendPort (SendPort (Thunk [Maybe Grid])), SendPort [Maybe Grid]) -> Process ()
+evalTaskGridList = evalTaskBase
+
 -- remotable declaration for all eval tasks
-$(remotable ['evalTaskInt, 'evalTaskMyInt])
+$(remotable ['evalTaskInt, 'evalTaskMyInt, 'evalTaskGrid, 'evalTaskGridList])
 
 instance Evaluatable Int where
   evalTask = $(mkClosure 'evalTaskInt)
 
 instance Evaluatable MyInt where
   evalTask = $(mkClosure 'evalTaskMyInt)
+
+instance Evaluatable (Maybe Grid) where
+  evalTask = $(mkClosure 'evalTaskGrid)
+
+instance Evaluatable [Maybe Grid] where
+  evalTask = $(mkClosure 'evalTaskGridList)
 
 myRemoteTable :: RemoteTable
 myRemoteTable = Main.__remoteTable initRemoteTable
@@ -53,8 +74,8 @@ fib (I n) = I $ go n (0,1)
 parFib :: Conf -> [MyInt] -> [MyInt]
 parFib conf xs = parEvalN conf (repeat fib) $ xs
 
-instance (Evaluatable b, ArrowChoice arr) => ArrowParallel arr a b Conf where
-    parEvalN conf fs = evalN fs >>> arr (evalParallel conf) >>> arr runPar
+instance (NFData a, Evaluatable b, ArrowChoice arr) => ArrowParallel arr a b Conf where
+    parEvalN conf fs = arr (force) >>> evalN fs >>> arr (evalParallel conf) >>> arr runPar
 
 main :: IO ()
 main = do
@@ -78,7 +99,9 @@ main = do
       --threadDelay 1000000
       readMVar (workers conf) >>= print
 
-      print $ parFib conf $ map I [100000..100010]
+      grids <- fmap lines $ readFile "sudoku.txt"
+
+      print (length (filter isJust (farm conf 4 solve grids)))
 
       -- TODO: actual computation here!
     ["slave", host, port] -> do
