@@ -25,6 +25,9 @@ import Control.Arrow
 
 import Control.DeepSeq
 
+import Control.Distributed.Process.Node(runProcess)
+import System.IO.Unsafe(unsafePerformIO)
+
 -- for Sudoku
 
 import Sudoku
@@ -76,6 +79,32 @@ parFib conf xs = parEvalN conf (repeat fib) $ xs
 
 instance (NFData a, Evaluatable b, ArrowChoice arr) => ArrowParallel arr a b Conf where
     parEvalN conf fs = arr (force) >>> evalN fs >>> arr (evalParallel conf) >>> arr runPar
+
+type CloudFuture a = SendPort (SendPort a)
+
+put' :: (Binary a, Typeable a) => LocalNode -> a -> CloudFuture a
+put' localNode a = unsafePerformIO $ do
+  mvar <- newEmptyMVar
+  runProcess localNode $ do
+    (senderSender, senderReceiver) <- newChan
+
+    liftIO $ do
+      forkProcess localNode $ do
+        sender <- receiveChan senderReceiver
+        sendChan sender a
+
+    liftIO $ putMVar mvar senderSender
+  takeMVar mvar
+
+get' :: (Binary a, Typeable a) => LocalNode -> CloudFuture a -> a
+get' localNode senderSender = unsafePerformIO $ do
+  mvar <- newEmptyMVar
+  runProcess localNode $ do
+    (sender, receiver) <- newChan
+    sendChan senderSender sender
+    a <- receiveChan receiver
+    liftIO $ putMVar mvar a
+  takeMVar mvar
 
 main :: IO ()
 main = do
