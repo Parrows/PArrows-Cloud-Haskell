@@ -18,10 +18,10 @@ import SimpleLocalNet
 import Parrows.Definition
 import Parrows.Skeletons.Map
 
-import Parrows.Future
+import Parrows.Future hiding (put', get')
 import Parrows.Util
 
-import Control.Arrow
+import Control.Arrow(arr, ArrowChoice, (>>>))
 
 import Control.DeepSeq
 
@@ -80,31 +80,50 @@ parFib conf xs = parEvalN conf (repeat fib) $ xs
 instance (NFData a, Evaluatable b, ArrowChoice arr) => ArrowParallel arr a b Conf where
     parEvalN conf fs = arr (force) >>> evalN fs >>> arr (evalParallel conf) >>> arr runPar
 
-type CloudFuture a = SendPort (SendPort a)
+newtype CloudFuture a = CF (SendPort (SendPort a))
 
-put' :: (Binary a, Typeable a) => LocalNode -> a -> CloudFuture a
-put' localNode a = unsafePerformIO $ do
+instance NFData (CloudFuture a) where
+  rnf _ = ()
+
+{-# NOINLINE ownLocalNode #-}
+ownLocalNode :: LocalNode
+ownLocalNode = unsafePerformIO $ readMVar ownLocalNodeMVar
+
+{-# NOINLINE ownLocalNodeMVar #-}
+ownLocalNodeMVar :: MVar LocalNode
+ownLocalNodeMVar = unsafePerformIO $ newEmptyMVar
+
+put' :: (Binary a, Typeable a) => a -> CloudFuture a
+put' a = unsafePerformIO $ do
   mvar <- newEmptyMVar
-  runProcess localNode $ do
+  runProcess ownLocalNode $ do
     (senderSender, senderReceiver) <- newChan
 
     liftIO $ do
-      forkProcess localNode $ do
+      forkProcess ownLocalNode $ do
         sender <- receiveChan senderReceiver
         sendChan sender a
 
     liftIO $ putMVar mvar senderSender
-  takeMVar mvar
+  takeMVar mvar >>= (return . CF)
 
-get' :: (Binary a, Typeable a) => LocalNode -> CloudFuture a -> a
-get' localNode senderSender = unsafePerformIO $ do
+get' :: (Binary a, Typeable a) => CloudFuture a -> a
+get' (CF senderSender) = unsafePerformIO $ do
   mvar <- newEmptyMVar
-  runProcess localNode $ do
+  runProcess ownLocalNode $ do
     (sender, receiver) <- newChan
     sendChan senderSender sender
     a <- receiveChan receiver
     liftIO $ putMVar mvar a
   takeMVar mvar
+
+instance (ArrowChoice arr, ArrowParallel arr a b Conf) => ArrowLoopParallel arr a b Conf where
+    loopParEvalN = parEvalN
+    postLoopParEvalN _ = evalN
+
+instance (Binary a, Typeable a) => Future CloudFuture a Conf where
+    put _ = arr put'
+    get _ = arr get'
 
 main :: IO ()
 main = do
@@ -115,6 +134,7 @@ main = do
       backend <- initializeBackend host port myRemoteTable
 
       localNode <- newLocalNode backend
+      putMVar ownLocalNodeMVar localNode
 
       conf <- defaultInitConf localNode
 
@@ -135,4 +155,8 @@ main = do
       -- TODO: actual computation here!
     ["slave", host, port] -> do
       backend <- initializeBackend host port myRemoteTable
+
+      localNode <- newLocalNode backend
+      putMVar ownLocalNodeMVar localNode
+
       startSlave backend
